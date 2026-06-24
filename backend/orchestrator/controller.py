@@ -445,6 +445,7 @@ class Controller:
                                 "success": True,
                                 "duration_sec": _duration,
                                 "error": None,
+                                "result": extraction_result,  # 供 ReportAgent 聚合使用
                             }
                         ],
                         "paper_path": paper_path,

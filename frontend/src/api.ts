@@ -74,6 +74,8 @@ export function subscribeProgress(
       /* ignore */
     }
     onDone()
+    // 主动关闭连接，避免 EventSource 自动重连导致反复 GET /api/progress/{taskId}
+    source.close()
   })
 
   source.onerror = (err) => {
