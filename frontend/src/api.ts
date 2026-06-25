@@ -1,5 +1,5 @@
 // API 调用封装：统一处理后端 /api/* 接口
-import type { ProgressEvent, Report, TaskStatus, HealthInfo } from './types'
+import type { ProgressEvent, Report, TaskStatus, HealthInfo, Paper, UploadResponse, AnalyzeParams } from './types'
 
 /** 后端基础地址（vite 代理已将 /api 转发到 localhost:8000） */
 const API_BASE = '/api'
@@ -25,12 +25,54 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 /**
  * 启动分析任务
- * POST /api/analyze body: { folder_path }
+ * POST /api/analyze body: { folder_path?, paper_ids?, research_direction? }
  */
-export async function startAnalysis(folderPath: string): Promise<{ task_id: string }> {
+export async function startAnalysis(params: AnalyzeParams): Promise<{ task_id: string }> {
   return requestJson<{ task_id: string }>(`${API_BASE}/analyze`, {
     method: 'POST',
-    body: JSON.stringify({ folder_path: folderPath }),
+    body: JSON.stringify(params),
+  })
+}
+
+/**
+ * 上传 PDF 论文
+ * POST /api/upload (multipart/form-data)
+ */
+export async function uploadPaper(file: File): Promise<UploadResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const resp = await fetch(`${API_BASE}/upload`, {
+    method: 'POST',
+    body: formData,
+  })
+  if (!resp.ok) {
+    let detail = ''
+    try {
+      const data = await resp.json()
+      detail = data?.detail || data?.message || JSON.stringify(data)
+    } catch {
+      detail = await resp.text().catch(() => '')
+    }
+    throw new Error(`上传失败 ${resp.status} ${resp.statusText}${detail ? `: ${detail}` : ''}`)
+  }
+  return (await resp.json()) as UploadResponse
+}
+
+/**
+ * 列出论文库全部论文
+ * GET /api/papers
+ */
+export async function listPapers(): Promise<{ papers: Paper[] }> {
+  return requestJson<{ papers: Paper[] }>(`${API_BASE}/papers`)
+}
+
+/**
+ * 删除论文
+ * DELETE /api/papers/{paper_id}
+ */
+export async function deletePaper(paperId: string): Promise<{ deleted: boolean; paper_id: string }> {
+  return requestJson<{ deleted: boolean; paper_id: string }>(`${API_BASE}/papers/${paperId}`, {
+    method: 'DELETE',
   })
 }
 

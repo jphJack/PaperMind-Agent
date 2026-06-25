@@ -1,13 +1,14 @@
 // Paper Innovation Agent - 主应用组件
 // 状态管理 + 布局 + 交互流程
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getHealth, getReport, startAnalysis, subscribeProgress } from './api'
+import { deletePaper, getHealth, getReport, listPapers, startAnalysis, subscribeProgress, uploadPaper } from './api'
 import { STAGE_LIST } from './types'
-import type { Evaluation, ProgressEvent, Report, StageKey } from './types'
+import type { AnalyzeParams, Evaluation, Paper, ProgressEvent, Report, StageKey } from './types'
 import ProgressBar from './components/ProgressBar'
 import StepsTimeline from './components/StepsTimeline'
 import EvaluationPanel from './components/EvaluationPanel'
 import ReportView from './components/ReportView'
+import PaperLibrary from './components/PaperLibrary'
 
 /** 初始化：所有阶段事件为空 */
 function createEmptyEvents(): Record<StageKey, ProgressEvent | undefined> {
@@ -24,6 +25,16 @@ export default function App() {
   const [taskId, setTaskId] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const [running, setRunning] = useState(false)
+
+  // 输入模式：上传论文 / 文件夹路径
+  const [inputMode, setInputMode] = useState<'upload' | 'folder'>('upload')
+  // 论文库列表与选中状态
+  const [papers, setPapers] = useState<Paper[]>([])
+  const [selectedPaperIds, setSelectedPaperIds] = useState<Set<string>>(new Set())
+  // 研究方向（注入创新点生成提示词）
+  const [researchDirection, setResearchDirection] = useState('')
+  // 上传中状态
+  const [uploading, setUploading] = useState(false)
 
   // 进度与报告
   const [eventsByStage, setEventsByStage] = useState<Record<StageKey, ProgressEvent | undefined>>(
@@ -52,6 +63,54 @@ export default function App() {
     }
   }, [])
 
+  /** 拉取论文库列表 */
+  const refreshPapers = useCallback(async () => {
+    try {
+      const { papers } = await listPapers()
+      setPapers(papers)
+    } catch (err) {
+      console.warn('拉取论文库失败:', err)
+    }
+  }, [])
+
+  /** 上传 PDF 论文 */
+  const handleUpload = useCallback(async (file: File) => {
+    setUploading(true)
+    try {
+      await uploadPaper(file)
+      await refreshPapers()
+    } catch (err) {
+      setError(`上传失败: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setUploading(false)
+    }
+  }, [refreshPapers])
+
+  /** 删除论文 */
+  const handleDeletePaper = useCallback(async (paperId: string) => {
+    try {
+      await deletePaper(paperId)
+      setSelectedPaperIds((prev) => {
+        const next = new Set(prev)
+        next.delete(paperId)
+        return next
+      })
+      await refreshPapers()
+    } catch (err) {
+      setError(`删除失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [refreshPapers])
+
+  /** 切换论文选中状态 */
+  const handleToggleSelect = useCallback((paperId: string) => {
+    setSelectedPaperIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(paperId)) next.delete(paperId)
+      else next.add(paperId)
+      return next
+    })
+  }, [])
+
   /** 健康检查：拉取后端模型信息 */
   useEffect(() => {
     let cancelled = false
@@ -68,6 +127,11 @@ export default function App() {
       cancelled = true
     }
   }, [])
+
+  /** 挂载时拉取论文库 */
+  useEffect(() => {
+    void refreshPapers()
+  }, [refreshPapers])
 
   /** 卸载时关闭 SSE */
   useEffect(() => {
@@ -91,11 +155,25 @@ export default function App() {
 
   /** 启动分析 */
   const handleStart = useCallback(async () => {
-    const path = folderPath.trim()
-    if (!path) {
-      setError('请输入 PDF 文件夹路径')
-      return
+    // 根据输入模式构建请求参数
+    const params: AnalyzeParams = {}
+    if (inputMode === 'folder') {
+      const path = folderPath.trim()
+      if (!path) {
+        setError('请输入 PDF 文件夹路径')
+        return
+      }
+      params.folder_path = path
+    } else {
+      if (selectedPaperIds.size === 0) {
+        setError('请至少选择一篇论文')
+        return
+      }
+      params.paper_ids = Array.from(selectedPaperIds)
     }
+    const direction = researchDirection.trim()
+    if (direction) params.research_direction = direction
+
     setError(null)
     setStarting(true)
     setRunning(true)
@@ -107,7 +185,7 @@ export default function App() {
     closeSource()
 
     try {
-      const { task_id } = await startAnalysis(path)
+      const { task_id } = await startAnalysis(params)
       setTaskId(task_id)
 
       // 订阅进度
@@ -146,7 +224,7 @@ export default function App() {
     } finally {
       setStarting(false)
     }
-  }, [folderPath, closeSource, fetchReport])
+  }, [inputMode, folderPath, selectedPaperIds, researchDirection, closeSource, fetchReport])
 
   /** 重试：基于已有 taskId 重新订阅 + 拉报告 */
   const handleRetry = useCallback(async () => {
@@ -218,25 +296,82 @@ export default function App() {
         <aside className="sidebar">
           <div className="input-card">
             <h3 className="card-title">分析输入</h3>
-            <input
-              className="path-input"
-              type="text"
-              placeholder="例如：D:/papers 或 /home/user/papers"
-              value={folderPath}
-              onChange={(e) => setFolderPath(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !starting && !running) {
-                  void handleStart()
-                }
-              }}
-              disabled={starting || running}
-              aria-label="PDF 文件夹路径"
-            />
-            <p className="hint">输入包含 PDF 论文的本地文件夹路径，系统将自动解析并生成创新点。</p>
+
+            {/* 输入模式切换 */}
+            <div className="mode-toggle">
+              <button
+                className={`mode-btn ${inputMode === 'upload' ? 'active' : ''}`}
+                onClick={() => setInputMode('upload')}
+                disabled={starting || running}
+              >
+                上传论文
+              </button>
+              <button
+                className={`mode-btn ${inputMode === 'folder' ? 'active' : ''}`}
+                onClick={() => setInputMode('folder')}
+                disabled={starting || running}
+              >
+                文件夹路径
+              </button>
+            </div>
+
+            {/* 上传模式：论文库；文件夹模式：路径输入 */}
+            {inputMode === 'upload' ? (
+              <PaperLibrary
+                papers={papers}
+                selectedIds={selectedPaperIds}
+                onToggleSelect={handleToggleSelect}
+                onDelete={handleDeletePaper}
+                onUpload={handleUpload}
+                uploading={uploading}
+                disabled={starting || running}
+              />
+            ) : (
+              <>
+                <input
+                  className="path-input"
+                  type="text"
+                  placeholder="例如：D:/papers 或 /home/user/papers"
+                  value={folderPath}
+                  onChange={(e) => setFolderPath(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !starting && !running) {
+                      void handleStart()
+                    }
+                  }}
+                  disabled={starting || running}
+                  aria-label="PDF 文件夹路径"
+                />
+                <p className="hint">输入包含 PDF 论文的本地文件夹路径，系统将自动解析并生成创新点。</p>
+              </>
+            )}
+
+            {/* 研究方向（两种模式都显示） */}
+            <div className="research-direction">
+              <label className="research-label" htmlFor="research-direction">
+                研究方向（可选）
+              </label>
+              <input
+                id="research-direction"
+                className="path-input"
+                type="text"
+                placeholder="例如：大模型高效微调、多模态推理"
+                value={researchDirection}
+                onChange={(e) => setResearchDirection(e.target.value)}
+                disabled={starting || running}
+                aria-label="研究方向"
+              />
+              <p className="hint">注入到创新点生成提示词，引导生成与方向相关的创新点。</p>
+            </div>
+
             <button
               className="btn btn-primary"
               onClick={() => void handleStart()}
-              disabled={starting || running || !folderPath.trim()}
+              disabled={
+                starting ||
+                running ||
+                (inputMode === 'folder' ? !folderPath.trim() : selectedPaperIds.size === 0)
+              }
             >
               {starting ? <><span className="spinner" /> 启动中...</> : running ? '分析进行中' : '启动分析'}
             </button>

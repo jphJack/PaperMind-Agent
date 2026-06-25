@@ -10,13 +10,13 @@ export type StageKey =
   | 'step6_experiment'
   | 'step7_integrate'
 
-/** 单步状态：待执行 / 运行中 / 完成 / 失败 / 降级 */
-export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'degraded'
+/** 单步状态：待执行 / 运行中 / 完成 / 失败 / 降级 / 复用缓存 */
+export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'degraded' | 'cached'
 
 /** 后端推送的进度事件（SSE 单条 data 反序列化结果） */
 export interface ProgressEvent {
   stage: StageKey
-  status: 'running' | 'done' | 'failed' | 'degraded'
+  status: 'running' | 'done' | 'failed' | 'degraded' | 'cached'
   message: string
   /** 整体进度 0-1 */
   progress: number
@@ -119,11 +119,44 @@ export interface StageInfo {
 
 /** 七步链路定义（与后端 StepStage 枚举对齐） */
 export const STAGE_LIST: StageInfo[] = [
-  { key: 'step1_parse', label: '论文解析', description: '遍历文件夹，PyMuPDF 解析 PDF 章节结构' },
-  { key: 'step2_extract', label: '结构化抽取', description: '单篇字段抽取 + Reflexion 自校验' },
-  { key: 'step3_index', label: '向量索引构建', description: 'BGE-m3 嵌入 + Chroma + BM25 混合检索' },
+  { key: 'step1_parse', label: '论文解析', description: 'PyMuPDF 解析 PDF 章节结构（已预处理则复用缓存）' },
+  { key: 'step2_extract', label: '结构化抽取', description: '单篇字段抽取 + Reflexion 自校验（已预处理则复用缓存）' },
+  { key: 'step3_index', label: '向量索引构建', description: 'BGE-m3 嵌入 + Chroma + BM25 混合检索（已预处理则复用缓存）' },
   { key: 'step4_gap', label: 'Gap 识别', description: '跨论文综合分析，识别研究空白' },
-  { key: 'step5_innovation', label: '创新点生成', description: '生成并筛选 2-3 个创新点' },
+  { key: 'step5_innovation', label: '创新点生成', description: '生成并筛选 2-3 个创新点（结合研究方向）' },
   { key: 'step6_experiment', label: '实验方案设计', description: '为创新点设计完整实验方案' },
   { key: 'step7_integrate', label: '整合输出', description: '生成 Markdown 研究提案报告' },
 ]
+
+/** 预处理状态 */
+export type PreprocessStatus = 'pending' | 'done' | 'failed'
+
+/** 论文库中的论文元数据 */
+export interface Paper {
+  paper_id: string
+  filename: string
+  source: 'upload' | 'folder'
+  original_path: string
+  upload_time: string
+  title: string
+  parse_status: PreprocessStatus
+  extract_status: PreprocessStatus
+  index_status: PreprocessStatus
+  parsed_at?: string | null
+  extracted_at?: string | null
+  indexed_at?: string | null
+}
+
+/** 上传论文响应 */
+export interface UploadResponse {
+  paper_id: string
+  filename: string
+  duplicate: boolean
+}
+
+/** 分析请求参数 */
+export interface AnalyzeParams {
+  folder_path?: string
+  paper_ids?: string[]
+  research_direction?: string
+}

@@ -27,3 +27,6 @@ frontend/tsconfig.tsbuildinfo
 # OS
 .DS_Store
 Thumbs.db
+
+# 日志
+日志.docx

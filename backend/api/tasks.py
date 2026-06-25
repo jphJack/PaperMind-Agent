@@ -45,11 +45,18 @@ class TaskManager:
     # 任务生命周期
     # ------------------------------------------------------------------ #
 
-    def create_task(self, folder_path: str) -> str:
+    def create_task(
+        self,
+        folder_path: Optional[str] = None,
+        paper_ids: Optional[list[str]] = None,
+        research_direction: Optional[str] = None,
+    ) -> str:
         """创建新任务，返回 task_id（uuid）
 
         Args:
-            folder_path: 待分析的 PDF 文件夹路径
+            folder_path: 待分析的 PDF 文件夹路径（与 paper_ids 二选一）
+            paper_ids: 上传论文 ID 列表（与 folder_path 二选一）
+            research_direction: 用户研究方向（可选）
 
         Returns:
             新生成的 task_id
@@ -58,7 +65,9 @@ class TaskManager:
         now = datetime.now().isoformat()
         self._tasks[task_id] = {
             "task_id": task_id,
-            "folder_path": folder_path,
+            "folder_path": folder_path or "",
+            "paper_ids": paper_ids or [],
+            "research_direction": research_direction or "",
             "status": "pending",
             "progress": 0.0,
             "current_stage": None,
@@ -69,7 +78,11 @@ class TaskManager:
             "updated_at": now,
         }
         self._notifiers[task_id] = asyncio.Event()
-        logger.info("创建任务: task_id=%s, folder=%s", task_id, folder_path)
+        logger.info(
+            "创建任务: task_id=%s, folder=%s, paper_ids=%d, direction=%s",
+            task_id, folder_path or "N/A", len(paper_ids or []),
+            "有" if research_direction else "无",
+        )
         return task_id
 
     def update_task(self, task_id: str, **kwargs: Any) -> None:

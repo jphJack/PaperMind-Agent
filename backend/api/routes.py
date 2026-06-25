@@ -1,4 +1,4 @@
-"""FastAPI 路由：分析任务提交、SSE 进度推送、报告查询、健康检查
+"""FastAPI 路由：分析任务提交、SSE 进度推送、报告查询、健康检查、论文上传与管理
 
 后台分析用 asyncio.create_task 启动，不阻塞 API 响应；
 SSE 用 sse_starlette.EventSourceResponse，从 task_manager 事件历史推送。
@@ -8,9 +8,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shutil
+import time
+from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -21,6 +25,7 @@ from backend.evaluator.evaluator import Evaluator
 from backend.llm.client import DeepSeekClient
 from backend.memory.manager import MemoryManager
 from backend.orchestrator.workflow import WorkflowOrchestrator
+from backend.storage.paper_library import compute_paper_id, get_paper_library
 from backend.tools.registry import build_default_registry
 
 logger = logging.getLogger(__name__)
@@ -34,21 +39,34 @@ router = APIRouter(prefix="/api", tags=["paper-innovation"])
 
 class AnalyzeRequest(BaseModel):
     """POST /api/analyze 请求体"""
-    folder_path: str = Field(description="待分析的 PDF 文件夹路径")
+    folder_path: Optional[str] = Field(default=None, description="待分析的 PDF 文件夹路径（与 paper_ids 二选一）")
+    paper_ids: Optional[list[str]] = Field(default=None, description="上传论文 ID 列表（与 folder_path 二选一）")
+    research_direction: Optional[str] = Field(default=None, description="用户研究方向（可选）")
 
 
 # ---------------------------------------------------------------------- #
 # 后台分析函数
 # ---------------------------------------------------------------------- #
 
-async def run_analysis(task_id: str, folder_path: str) -> None:
+async def run_analysis(
+    task_id: str,
+    folder_path: Optional[str] = None,
+    paper_ids: Optional[list[str]] = None,
+    research_direction: Optional[str] = None,
+) -> None:
     """后台分析主流程：编排工作流 → 生成报告 → 生成评估 → 更新任务状态
 
     Args:
         task_id: 任务 ID
-        folder_path: PDF 文件夹路径
+        folder_path: PDF 文件夹路径（与 paper_ids 二选一）
+        paper_ids: 上传论文 ID 列表（与 folder_path 二选一）
+        research_direction: 用户研究方向（可选）
     """
-    logger.info("启动后台分析: task_id=%s, folder=%s", task_id, folder_path)
+    logger.info(
+        "启动后台分析: task_id=%s, folder=%s, paper_ids=%d, direction=%s",
+        task_id, folder_path or "N/A", len(paper_ids or []),
+        "有" if research_direction else "无",
+    )
     try:
         # 标记为运行中
         task_manager.update_task(
@@ -84,23 +102,32 @@ async def run_analysis(task_id: str, folder_path: str) -> None:
             )
 
         # 执行工作流流水线
+        _t_pipe0 = time.perf_counter()
         pipeline_output = await orchestrator.run_pipeline(
-            folder_path, progress_callback
+            folder_path=folder_path,
+            paper_ids=paper_ids,
+            research_direction=research_direction,
+            progress_callback=progress_callback,
         )
+        logger.info("[task timing] run_pipeline: %.2fs", time.perf_counter() - _t_pipe0)
         final_results = pipeline_output.get("final_results", {}) or {}
         evaluation_data = pipeline_output.get("evaluation_data", {}) or {}
 
         # 用 ReportAgent 生成最终报告
+        _t_rep0 = time.perf_counter()
         report_agent = ReportAgent(client=client)
         report = await report_agent.generate_report(final_results)
+        logger.info("[task timing] ReportAgent.generate_report: %.2fs", time.perf_counter() - _t_rep0)
 
         # 用 Evaluator 生成评估
+        _t_eval0 = time.perf_counter()
         evaluator = Evaluator(client=client)
         evaluation = await evaluator.evaluate(
             final_results,
             evaluation_data.get("tool_call_records", []),
             evaluation_data.get("confidence_stats", {}),
         )
+        logger.info("[task timing] Evaluator.evaluate: %.2fs", time.perf_counter() - _t_eval0)
 
         # 存储最终结果，标记完成
         task_manager.update_task(
@@ -113,7 +140,7 @@ async def run_analysis(task_id: str, folder_path: str) -> None:
                 "evaluation": evaluation,
             },
         )
-        logger.info("任务完成: task_id=%s", task_id)
+        logger.info("[task timing] 任务完成: task_id=%s", task_id)
 
     except Exception as exc:
         logger.error(
@@ -131,21 +158,130 @@ async def analyze(request: AnalyzeRequest) -> dict:
     """提交分析任务：创建 task_id 并后台启动，立即返回 task_id
 
     Args:
-        request: 含 folder_path 的请求体
+        request: 含 folder_path 或 paper_ids + 可选 research_direction 的请求体
 
     Returns:
         {"task_id": str}
     """
-    if not request.folder_path:
-        raise HTTPException(status_code=400, detail="folder_path 不能为空")
+    # 校验：folder_path 与 paper_ids 至少提供一个
+    if not request.folder_path and not request.paper_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="必须提供 folder_path 或 paper_ids 之一",
+        )
 
     # 创建任务
-    task_id = task_manager.create_task(request.folder_path)
+    task_id = task_manager.create_task(
+        folder_path=request.folder_path,
+        paper_ids=request.paper_ids,
+        research_direction=request.research_direction,
+    )
 
     # 后台启动分析（不阻塞响应）
-    asyncio.create_task(run_analysis(task_id, request.folder_path))
+    asyncio.create_task(
+        run_analysis(
+            task_id,
+            folder_path=request.folder_path,
+            paper_ids=request.paper_ids,
+            research_direction=request.research_direction,
+        )
+    )
 
     return {"task_id": task_id}
+
+
+# ---------------------------------------------------------------------- #
+# 论文上传与管理
+# ---------------------------------------------------------------------- #
+
+@router.post("/upload")
+async def upload_paper(file: UploadFile = File(...)) -> dict:
+    """上传 PDF 论文
+
+    保存到 data/uploads/{paper_id}.pdf，注册到论文库。
+    同一文件重复上传返回 duplicate=true。
+
+    Args:
+        file: PDF 文件
+
+    Returns:
+        {"paper_id": str, "filename": str, "duplicate": bool}
+    """
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
+
+    # 保存到临时文件以计算内容哈希
+    tmp_path = settings.UPLOADS_DIR / f"tmp_{file.filename}"
+    try:
+        with open(tmp_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        # 计算内容哈希作为 paper_id
+        paper_id = compute_paper_id(str(tmp_path))
+
+        # 检查是否已存在
+        library = get_paper_library()
+        existing = library.get(paper_id)
+        duplicate = existing is not None
+
+        # 移动到正式存储路径
+        final_path = settings.UPLOADS_DIR / f"{paper_id}.pdf"
+        if not final_path.exists():
+            shutil.move(str(tmp_path), str(final_path))
+        else:
+            # 已存在同名文件，删除临时文件
+            tmp_path.unlink(missing_ok=True)
+
+        # 注册到论文库
+        library.register(
+            paper_id=paper_id,
+            filename=file.filename,
+            source="upload",
+            original_path=str(final_path),
+        )
+
+        logger.info("上传论文: paper_id=%s, filename=%s, duplicate=%s", paper_id[:12], file.filename, duplicate)
+        return {
+            "paper_id": paper_id,
+            "filename": file.filename,
+            "duplicate": duplicate,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("上传论文失败: %s", exc, exc_info=True)
+        # 清理临时文件
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"上传失败: {exc}")
+
+
+@router.get("/papers")
+async def list_papers() -> dict:
+    """列出论文库全部论文及预处理状态
+
+    Returns:
+        {"papers": [PaperMetadata]}
+    """
+    library = get_paper_library()
+    papers = library.list_all()
+    return {"papers": papers}
+
+
+@router.delete("/papers/{paper_id}")
+async def delete_paper(paper_id: str) -> dict:
+    """删除论文：移除库记录 + 缓存文件 + Chroma chunks + 上传原文件
+
+    Args:
+        paper_id: 论文 ID
+
+    Returns:
+        {"deleted": bool, "paper_id": str}
+    """
+    library = get_paper_library()
+    deleted = library.delete(paper_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"论文 {paper_id} 不存在")
+    return {"deleted": True, "paper_id": paper_id}
 
 
 @router.get("/progress/{task_id}")

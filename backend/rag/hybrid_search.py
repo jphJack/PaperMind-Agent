@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from typing import Optional
 
 from backend.models.schemas import ParsedPaper, Section
 from backend.rag.bm25_store import BM25Store
-from backend.rag.embedding import Embedder
+from backend.rag.embedding import Embedder, get_default_embedder
 from backend.rag.vector_store import ChromaStore
+
+logger = logging.getLogger(__name__)
 
 # 分块目标字符数
 CHUNK_SIZE = 500
@@ -23,7 +27,7 @@ class HybridSearcher:
         embedder: Optional[Embedder] = None,
         chunk_size: int = CHUNK_SIZE,
     ):
-        self.embedder = embedder or Embedder()
+        self.embedder = embedder or get_default_embedder()
         self.vector_store = vector_store or ChromaStore(embedder=self.embedder)
         self.bm25_store = bm25_store or BM25Store()
         self.chunk_size = chunk_size
@@ -69,18 +73,34 @@ class HybridSearcher:
 
     def add_paper(self, paper: ParsedPaper):
         """把单篇论文章节分块后加入向量库与 BM25 库"""
+        t_start = time.perf_counter()
         all_chunks: list[dict] = []
         for section in paper.sections:
             all_chunks.extend(self._chunk_section(section))
+        t_chunk = time.perf_counter()
+        logger.info(
+            "[add_paper] %s 分块完成: %d sections → %d chunks, 用时 %.2fs",
+            paper.path, len(paper.sections), len(all_chunks), t_chunk - t_start,
+        )
         if not all_chunks:
             return
         # 向量库：传入 paper_path/title + chunks[{section, text}]
         self.vector_store.add_chunks(paper.path, paper.title, all_chunks)
+        t_vec = time.perf_counter()
+        logger.info(
+            "[add_paper] %s 向量库写入完成: 用时 %.2fs (累计 %.2fs)",
+            paper.path, t_vec - t_chunk, t_vec - t_start,
+        )
         # BM25：chunks 需带 paper_path/title
         bm25_chunks = [
             {**c, "paper_path": paper.path, "title": paper.title} for c in all_chunks
         ]
         self.bm25_store.add_chunks(bm25_chunks)
+        t_bm25 = time.perf_counter()
+        logger.info(
+            "[add_paper] %s BM25 写入完成: 用时 %.2fs (累计 %.2fs)",
+            paper.path, t_bm25 - t_vec, t_bm25 - t_start,
+        )
 
     def load_all(self, papers: list[ParsedPaper]):
         """批量加载多篇论文"""

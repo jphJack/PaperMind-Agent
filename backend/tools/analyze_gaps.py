@@ -98,17 +98,32 @@ async def analyze_gaps(papers_records: list[dict]) -> dict:
     matrix = _build_comparison_matrix(papers_records)
 
     # 2. 构造强推理提示词
+    n_papers = len(papers_records)
+    if n_papers == 1:
+        single_paper_hint = (
+            f"\n## 重要提示\n当前仅 1 篇论文。请基于该论文自身的 limitations（局限性）和 future_work（未来工作），"
+            "识别可深化的研究空白。source_papers 只需包含这 1 篇论文即可。"
+            "至少识别 2 个有价值的 Gap（基于论文内部字段证据，不要求跨论文对比）。"
+        )
+        source_constraint = "source_papers 至少包含 1 篇论文。"
+    else:
+        single_paper_hint = ""
+        source_constraint = "每个 Gap 的 source_papers 至少包含 2 篇论文。"
+
     prompt = f"""你是一位资深学术研究者，需要从以下多篇论文的结构化对比中识别研究空白（Gap）。
 
 ## 论文对比矩阵
 {matrix}
-
+{single_paper_hint}
 ## 任务
 请综合分析上述论文，识别以下四类 Gap 信号：
 1. repeated_limitation（重复局限）：多篇论文提到同一局限性，但无人解决
 2. method_gap（方法空白）：某类问题只有少数方法尝试且效果不佳
 3. contradictory（矛盾结论）：不同论文对同一问题给出冲突结论
 4. unfulfilled_future（未兑现的未来工作）：多篇论文指向同一未来方向但无人完成
+
+对于单篇论文场景，重点关注该论文自身的 limitations 与 future_work 字段，
+识别方法层面、数据层面、评估层面的可深化方向。
 
 ## 输出要求
 严格输出 JSON，不要包含任何额外说明文本或代码块标记。格式如下：
@@ -117,14 +132,14 @@ async def analyze_gaps(papers_records: list[dict]) -> dict:
     {{
       "description": "Gap 的清晰描述",
       "gap_type": "repeated_limitation|method_gap|contradictory|unfulfilled_future",
-      "source_papers": ["来源论文标题1", "来源论文标题2"],
+      "source_papers": ["来源论文标题1"],
       "evidence": "论证依据，引用具体论文的具体字段",
       "confidence": 0.0到1.0之间的置信度
     }}
   ]
 }}
 
-只输出真正有跨论文证据支撑的 Gap，不要编造。每个 Gap 的 source_papers 至少包含 2 篇论文。"""
+只输出真正有证据支撑的 Gap，不要编造。{source_constraint}"""
 
     messages = [
         {
@@ -146,6 +161,13 @@ async def analyze_gaps(papers_records: list[dict]) -> dict:
     gaps = data.get("gaps", [])
     if not isinstance(gaps, list):
         gaps = []
+
+    logger.info(
+        "[analyze_gaps] LLM 返回 %d gaps (papers=%d, content_len=%d)",
+        len(gaps), len(papers_records), len(content),
+    )
+    if len(gaps) == 0:
+        logger.warning("[analyze_gaps] Gap 数量为 0！原始内容前 500 字: %s", content[:500])
 
     # 3. 对每个 Gap 调用混合搜索补充原文佐证
     enriched: list[dict] = []

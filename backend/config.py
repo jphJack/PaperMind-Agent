@@ -21,6 +21,7 @@ class Settings:
     CHROMA_PATH: Path = Path(os.getenv("CHROMA_PATH", "./data/chroma"))
     CACHE_DIR: Path = Path(os.getenv("CACHE_DIR", "./data/cache"))
     REPORT_DIR: Path = Path(os.getenv("REPORT_DIR", "./data/reports"))
+    UPLOADS_DIR: Path = Path(os.getenv("UPLOADS_DIR", "./data/uploads"))
 
     # 超时与重试
     LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "120"))
@@ -37,7 +38,7 @@ class Settings:
     WEB_SEARCH_BACKEND: str = os.getenv("WEB_SEARCH_BACKEND", "duckduckgo")
 
     def ensure_dirs(self):
-        for d in (self.CHROMA_PATH, self.CACHE_DIR, self.REPORT_DIR):
+        for d in (self.CHROMA_PATH, self.CACHE_DIR, self.REPORT_DIR, self.UPLOADS_DIR):
             d.mkdir(parents=True, exist_ok=True)
 
 
@@ -45,4 +46,5 @@ settings = Settings()
 settings.CHROMA_PATH = settings.BASE_DIR / settings.CHROMA_PATH if not settings.CHROMA_PATH.is_absolute() else settings.CHROMA_PATH
 settings.CACHE_DIR = settings.BASE_DIR / settings.CACHE_DIR if not settings.CACHE_DIR.is_absolute() else settings.CACHE_DIR
 settings.REPORT_DIR = settings.BASE_DIR / settings.REPORT_DIR if not settings.REPORT_DIR.is_absolute() else settings.REPORT_DIR
+settings.UPLOADS_DIR = settings.BASE_DIR / settings.UPLOADS_DIR if not settings.UPLOADS_DIR.is_absolute() else settings.UPLOADS_DIR
 settings.ensure_dirs()

@@ -2,10 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import re
 from collections import Counter
+from pathlib import Path
+from typing import Optional
 
+from backend.config import settings
 from backend.tools.base import Tool
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- 启发式规则 ----------
@@ -239,6 +246,45 @@ async def parse_pdf(file_path: str) -> dict:
         return await asyncio.to_thread(_parse_pdf_sync, file_path)
     except Exception as e:
         return {"error": f"PDF 解析失败: {e}", "path": file_path}
+
+
+# ---------- 缓存函数 ----------
+
+def _parsed_cache_path(paper_id: str) -> Path:
+    """解析结果缓存路径：data/cache/parsed/{paper_id}.json"""
+    parsed_dir = settings.CACHE_DIR / "parsed"
+    parsed_dir.mkdir(parents=True, exist_ok=True)
+    return parsed_dir / f"{paper_id}.json"
+
+
+def save_parsed(paper_id: str, parsed: dict) -> Path:
+    """保存解析结果到缓存
+
+    Args:
+        paper_id: 论文内容哈希
+        parsed: parse_pdf 返回的解析结果 dict
+
+    Returns:
+        缓存文件路径
+    """
+    cache_path = _parsed_cache_path(paper_id)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(parsed, f, ensure_ascii=False, indent=2, default=str)
+    logger.info("解析结果已缓存至 %s", cache_path)
+    return cache_path
+
+
+def load_parsed(paper_id: str) -> Optional[dict]:
+    """从缓存加载解析结果，不存在返回 None"""
+    cache_path = _parsed_cache_path(paper_id)
+    if not cache_path.exists():
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("读取解析缓存 %s 失败: %s", cache_path, exc)
+        return None
 
 
 # ---------- Tool 定义 ----------

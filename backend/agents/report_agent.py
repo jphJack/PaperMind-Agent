@@ -60,13 +60,23 @@ class ReportAgent:
         - references：参考文献溯源列表 [{title, path, sections}]
         - markdown：完整 Markdown 报告字符串
         """
+        import time as _time
+
+        _t_total = _time.perf_counter()
         papers_records = pipeline_results.get("papers_records", []) or []
         gaps = pipeline_results.get("gaps", []) or []
         innovations = pipeline_results.get("innovations", []) or []
         experiment_plans = pipeline_results.get("experiment_plans", []) or []
 
+        logger.info(
+            "[ReportAgent] 输入规模: papers=%d gaps=%d innovations=%d plans=%d",
+            len(papers_records), len(gaps), len(innovations), len(experiment_plans),
+        )
+
         # 1. 构造整合提示词
+        _t_prompt0 = _time.perf_counter()
         prompt = self._build_report_prompt(pipeline_results)
+        logger.info("[ReportAgent timing] 构造 prompt: %.3fs", _time.perf_counter() - _t_prompt0)
 
         messages = [
             {
@@ -79,15 +89,24 @@ class ReportAgent:
             {"role": "user", "content": prompt},
         ]
 
-        # 2. 调用 LLM
+        # 2. 调用 LLM（ReportAgent 输出较长，显式放大 max_tokens 避免 JSON 被截断）
         try:
-            response = await self.client.chat(messages=messages)
+            _t_llm0 = _time.perf_counter()
+            response = await self.client.chat(messages=messages, max_tokens=8192)
             content = response.choices[0].message.content or ""
+            # 记录 finish_reason，length 表示被 max_tokens 截断
+            finish_reason = response.choices[0].finish_reason
+            usage = getattr(response, "usage", None)
+            logger.info(
+                "[ReportAgent timing] LLM 调用: %.2fs, 输出 %d 字符, finish_reason=%s, usage=%s",
+                _time.perf_counter() - _t_llm0, len(content), finish_reason, usage,
+            )
         except Exception as exc:
             logger.warning("ReportAgent LLM 调用失败，降级为本地格式化: %s", exc)
             content = ""
 
         # 3. 解析 LLM 返回的结构化数据
+        _t_parse0 = _time.perf_counter()
         structured_from_llm: dict = {}
         if content:
             parsed = parse_json_safe(content)
@@ -129,7 +148,15 @@ class ReportAgent:
                     "references": references,
                 }
             )
+        logger.info(
+            "[ReportAgent timing] 解析+组装+markdown: %.3fs",
+            _time.perf_counter() - _t_parse0,
+        )
 
+        logger.info(
+            "[ReportAgent timing] 总耗时: %.2fs, markdown %d 字符",
+            _time.perf_counter() - _t_total, len(markdown),
+        )
         return {
             "background_review": background_review,
             "innovations": merged_innovations,

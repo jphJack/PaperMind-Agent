@@ -48,7 +48,10 @@ async def _novelty_check(title: str, idea: str) -> str:
         return "新颖性检查失败（联网搜索不可用）"
 
 
-async def generate_innovations(gaps: list[dict]) -> dict:
+async def generate_innovations(
+    gaps: list[dict],
+    research_direction: Optional[str] = None,
+) -> dict:
     """针对 Gap 生成候选创新方向，三维评分筛选，取综合得分最高的 2-3 个
 
     输入：Gap 列表 [{description, gap_type, source_papers, evidence, confidence}]
@@ -64,9 +67,19 @@ async def generate_innovations(gaps: list[dict]) -> dict:
         for g in gaps
     )
 
+    # 1.1 研究方向约束文本
+    direction_text = ""
+    if research_direction and research_direction.strip():
+        direction_text = (
+            f"\n## 用户研究方向约束\n"
+            f"用户的研究方向为：{research_direction.strip()}\n"
+            f"生成的创新点应尽量与该方向相关，"
+            f"并在 supporting_evidence 中说明创新点与该方向的关联。\n"
+        )
+
     # 2. 构造创新生成提示词
     prompt = f"""你是一位富有创造力的学术研究者，需要基于以下研究空白（Gap）生成候选创新方向。
-
+{direction_text}
 ## 研究空白列表
 {gaps_text}
 
@@ -173,7 +186,11 @@ generate_innovations_parameters = {
             "type": "array",
             "items": {"type": "object"},
             "description": "Gap 列表，每条含 description/gap_type/source_papers/evidence/confidence",
-        }
+        },
+        "research_direction": {
+            "type": "string",
+            "description": "用户的研究方向（可选），生成的创新点应尽量与该方向相关",
+        },
     },
     "required": ["gaps"],
 }

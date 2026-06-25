@@ -29,10 +29,12 @@ class DeepSeekClient:
         messages: list[dict],
         tools: Optional[list[dict]] = None,
         tool_choice: str = "auto",
+        max_tokens: Optional[int] = None,
     ) -> Any:
         """调用 Chat Completions，返回模型回复（ChatCompletion 对象）
 
         单次调用失败时按指数退避重试 max_retries 次。
+        max_tokens: 显式设置输出 token 上限，None 用 API 默认值（4096）。
         """
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -41,6 +43,8 @@ class DeepSeekClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
 
         last_exc: Optional[Exception] = None
         total_attempts = self.max_retries + 1  # 初次调用 + 重试次数

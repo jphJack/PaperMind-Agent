@@ -390,26 +390,33 @@ def _resolve_cache_dir(cache_dir: Optional[str] = None) -> Path:
 
 
 def _paper_hash(paper_path: str) -> str:
-    """以论文路径生成 hash，作为缓存文件名"""
+    """以论文路径生成 hash，作为缓存文件名（向后兼容旧缓存）"""
     return hashlib.md5(paper_path.encode("utf-8")).hexdigest()[:16]
 
 
-def save_record(record: dict, cache_dir: Optional[str] = None) -> Path:
+def _cache_file_path(paper_id: Optional[str], paper_path: str, cache_dir: Optional[Path] = None) -> Path:
+    """解析缓存文件路径，优先用 paper_id，否则回退到路径哈希"""
+    base = cache_dir or _resolve_cache_dir()
+    papers_dir = base / "papers"
+    papers_dir.mkdir(parents=True, exist_ok=True)
+    key = paper_id if paper_id else _paper_hash(paper_path)
+    return papers_dir / f"{key}.json"
+
+
+def save_record(record: dict, cache_dir: Optional[str] = None, paper_id: Optional[str] = None) -> Path:
     """保存单篇抽取结果到独立 JSON 文件，并追加写入 papers.jsonl
 
     Args:
         record: 抽取结果 dict
         cache_dir: 缓存目录，默认 settings.CACHE_DIR
+        paper_id: 论文内容哈希，优先用作缓存键
 
     Returns:
         独立 JSON 文件路径
     """
     base = _resolve_cache_dir(cache_dir)
-    papers_dir = base / "papers"
-    papers_dir.mkdir(parents=True, exist_ok=True)
-
     paper_path = record.get("path", "")
-    file_path = papers_dir / f"{_paper_hash(paper_path)}.json"
+    file_path = _cache_file_path(paper_id, paper_path, base)
 
     # 独立 JSON 文件（可单独重跑）
     with open(file_path, "w", encoding="utf-8") as f:
@@ -424,18 +431,19 @@ def save_record(record: dict, cache_dir: Optional[str] = None) -> Path:
     return file_path
 
 
-def load_record(paper_path: str, cache_dir: Optional[str] = None) -> Optional[dict]:
+def load_record(paper_path: str, cache_dir: Optional[str] = None, paper_id: Optional[str] = None) -> Optional[dict]:
     """从缓存加载单篇抽取结果，不存在返回 None
 
     Args:
         paper_path: 论文文件路径
         cache_dir: 缓存目录，默认 settings.CACHE_DIR
+        paper_id: 论文内容哈希，优先用作缓存键
 
     Returns:
         抽取结果 dict，或 None
     """
     base = _resolve_cache_dir(cache_dir)
-    file_path = base / "papers" / f"{_paper_hash(paper_path)}.json"
+    file_path = _cache_file_path(paper_id, paper_path, base)
     if not file_path.exists():
         return None
     try:

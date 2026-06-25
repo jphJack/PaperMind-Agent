@@ -49,13 +49,17 @@ class WorkflowOrchestrator:
 
     async def run_pipeline(
         self,
-        folder_path: str,
+        folder_path: Optional[str] = None,
+        paper_ids: Optional[list[str]] = None,
+        research_direction: Optional[str] = None,
         progress_callback: Optional[ProgressCallback] = None,
     ) -> dict:
         """执行完整工作流：Controller 主流程 + Reflexion 自校验 + 降级处理
 
         Args:
-            folder_path: PDF 文件夹路径
+            folder_path: PDF 文件夹路径（与 paper_ids 二选一）
+            paper_ids: 上传论文 ID 列表（与 folder_path 二选一）
+            research_direction: 用户研究方向（可选）
             progress_callback: 进度回调
 
         Returns:
@@ -79,7 +83,11 @@ class WorkflowOrchestrator:
 
         # 调用 Controller.run 执行主流程（带 Reflexion 钩子）
         results = await self.controller.run(
-            folder_path, progress_callback, post_step_hook
+            folder_path=folder_path,
+            paper_ids=paper_ids,
+            research_direction=research_direction,
+            progress_callback=progress_callback,
+            post_step_hook=post_step_hook,
         )
 
         # 处理 Controller 自身的降级记录

@@ -14,13 +14,15 @@ const STATUS_LABEL: Record<StepStatus, string> = {
   done: '完成',
   failed: '失败',
   degraded: '降级',
+  cached: '复用缓存',
 }
 
-/** 步骤序号图标：未开始显示数字，已完成显示对勾，失败显示叉，降级显示感叹号 */
+/** 步骤序号图标：未开始显示数字，已完成显示对勾，失败显示叉，降级显示感叹号，缓存显示勾号 */
 function StepIcon({ status, index }: { status: StepStatus; index: number }) {
   if (status === 'done') return <span aria-hidden>✓</span>
   if (status === 'failed') return <span aria-hidden>✕</span>
   if (status === 'degraded') return <span aria-hidden>!</span>
+  if (status === 'cached') return <span aria-hidden>↻</span>
   return <span aria-hidden>{index}</span>
 }
 
@@ -31,6 +33,7 @@ function deriveStatus(event: ProgressEvent | undefined): StepStatus {
   if (event.status === 'done') return 'done'
   if (event.status === 'failed') return 'failed'
   if (event.status === 'degraded') return 'degraded'
+  if (event.status === 'cached') return 'cached'
   return 'pending'
 }
 

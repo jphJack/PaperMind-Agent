@@ -1,11 +1,15 @@
 """Chroma 向量库：基于 chromadb 的本地持久化向量存储"""
 from __future__ import annotations
 
+import logging
+import time
 import uuid
 from typing import Optional
 
 from backend.config import settings
 from backend.rag.embedding import Embedder
+
+logger = logging.getLogger(__name__)
 
 
 class ChromaStore:
@@ -27,12 +31,22 @@ class ChromaStore:
     def _ensure(self):
         """懒初始化 client 和 collection，首次访问时建立"""
         if self._client is None:
+            _t0 = time.perf_counter()
             # 延迟导入，避免模块导入即触发 chromadb 重型初始化
             import chromadb
+            _t_import = time.perf_counter()
 
             self._client = chromadb.PersistentClient(path=self.chroma_path)
+            _t_client = time.perf_counter()
+
             self._collection = self._client.get_or_create_collection(
                 name=self.collection_name
+            )
+            _t_coll = time.perf_counter()
+            logger.info(
+                "[ChromaStore._ensure] 首次初始化: import_chromadb=%.3fs client=%.3fs collection=%.3fs total=%.3fs path=%s",
+                _t_import - _t0, _t_client - _t_import, _t_coll - _t_client,
+                _t_coll - _t0, self.chroma_path,
             )
 
     def add_chunks(self, paper_path: str, title: str, chunks: list[dict]):
@@ -46,8 +60,14 @@ class ChromaStore:
         if not chunks:
             return
         self._ensure()
+        t0 = time.perf_counter()
         texts = [c["text"] for c in chunks]
         embeddings = self.embedder.embed_texts(texts)
+        t_emb = time.perf_counter()
+        logger.info(
+            "[add_chunks] %s embedding 完成: %d chunks, 用时 %.2fs",
+            paper_path, len(chunks), t_emb - t0,
+        )
         # 唯一 id，避免冲突
         ids = [str(uuid.uuid4()) for _ in chunks]
         metadatas = [
@@ -63,6 +83,11 @@ class ChromaStore:
             embeddings=embeddings,
             documents=texts,
             metadatas=metadatas,
+        )
+        t_add = time.perf_counter()
+        logger.info(
+            "[add_chunks] %s chroma.add 完成: 用时 %.2fs (累计 %.2fs)",
+            paper_path, t_add - t_emb, t_add - t0,
         )
 
     def vector_search(self, query: str, top_k: int = 5) -> list[dict]:
